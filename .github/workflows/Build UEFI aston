@@ -1,0 +1,26 @@
+name: Build UEFI for aston (OnePlus Ace 3)
+
+on:
+  workflow_dispatch:
+
+env:
+  CI_BUILD: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Build UEFI for aston
+        run: bash ./setup_env.sh -p apt && python3 build_uefi.py -d aston
+
+      - name: Upload UEFI images
+        uses: actions/upload-artifact@v7
+        with:
+          name: uefi-aston
+          path: ./Mu-aston*
+          compression-level: 9
