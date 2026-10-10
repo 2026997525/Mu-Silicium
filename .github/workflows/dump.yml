@@ -1,4 +1,4 @@
-name: Diagnose Aston DSC
+name: Dump Platform Inc Files
 
 on:
   workflow_dispatch:
@@ -12,35 +12,37 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Dump DSC structure
+      - name: Find and dump platform inc files
         run: |
-          echo "========== aston.dsc include 指令 =========="
-          grep -n "!include\|!INCLUDE" Platforms/OnePlus/astonPkg/aston.dsc || echo "(none)"
+          echo "========== 所有 KailuaPkg 相关文件 =========="
+          find . -iname "*Kailua*" -not -path "./.git/*" 2>/dev/null
 
           echo ""
-          echo "========== aston.dsc [LibraryClasses] 段 =========="
-          awk '/^\[LibraryClasses\]/{f=1} f{print} /^\[/{if(f && $0 !~ /LibraryClasses/){exit}}' \
-            Platforms/OnePlus/astonPkg/aston.dsc
+          echo "========== 所有 LanaiPkg 相关文件 =========="
+          find . -iname "*Lanai*" -not -path "./.git/*" 2>/dev/null
 
           echo ""
-          echo "========== 找所有可用的平台 DSC =========="
-          find Platforms -name "*.dsc" -maxdepth 3 2>/dev/null | head -20
-
-          echo ""
-          echo "========== SiliciumPkg.dsc.inc 存在性 =========="
-          find . -name "SiliciumPkg.dsc.inc" -not -path "./.git/*" 2>/dev/null
-
-          echo ""
-          echo "========== SiliciumPkg.dsc.inc 的 [LibraryClasses] 段 =========="
-          INC=$(find . -name "SiliciumPkg.dsc.inc" -not -path "./.git/*" 2>/dev/null | head -1)
+          echo "========== KailuaPkg.dsc.inc 的完整 LibraryClasses =========="
+          INC=$(find . -name "KailuaPkg.dsc.inc" -not -path "./.git/*" 2>/dev/null | head -1)
           if [ -n "$INC" ]; then
-            awk '/^\[LibraryClasses\]/{f=1} f{print} /^\[/{if(f && $0 !~ /LibraryClasses/){exit}}' "$INC" | head -60
+            echo "File: $INC"
+            awk '/^\[LibraryClasses\]/{f=1} f{print} /^\[/{if(f && $0 !~ /LibraryClasses/){exit}}' "$INC"
+          else
+            echo "(KailuaPkg.dsc.inc not found)"
           fi
 
           echo ""
-          echo "========== 对比：giulia.dsc（Active 设备）的 include =========="
-          if [ -f "Platforms/OnePlus/giuliaPkg/giulia.dsc" ]; then
-            grep -n "!include\|!INCLUDE" Platforms/OnePlus/giuliaPkg/giulia.dsc || echo "(none)"
+          echo "========== LanaiPkg.dsc.inc 的完整 LibraryClasses =========="
+          INC2=$(find . -name "LanaiPkg.dsc.inc" -not -path "./.git/*" 2>/dev/null | head -1)
+          if [ -n "$INC2" ]; then
+            echo "File: $INC2"
+            awk '/^\[LibraryClasses\]/{f=1} f{print} /^\[/{if(f && $0 !~ /LibraryClasses/){exit}}' "$INC2"
           else
-            find Platforms -iname "*giulia*" -name "*.dsc" 2>/dev/null
+            echo "(LanaiPkg.dsc.inc not found)"
           fi
+
+          echo ""
+          echo "========== BootLogoLib 在整个仓库里有哪些实现 =========="
+          grep -rn "LIBRARY_CLASS.*BootLogoLib\|BootLogoLib" \
+            --include="*.inf" --include="*.inc" --include="*.dsc" \
+            . 2>/dev/null | grep -v "^./.git" | head -20 || echo "(none)"
