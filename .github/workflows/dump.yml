@@ -1,48 +1,274 @@
-name: Dump Platform Inc Files
+name: Build Mu-aston with SimpleInit
 
 on:
   workflow_dispatch:
 
 jobs:
-  dump:
+  build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android
+          df -h
+
+      - name: Checkout Mu-Silicium
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Find and dump platform inc files
+      - name: Clone simple-init
         run: |
-          echo "========== 所有 KailuaPkg 相关文件 =========="
-          find . -iname "*Kailua*" -not -path "./.git/*" 2>/dev/null
+          rm -rf Platforms/OnePlus/SimpleInit
+          git clone --recursive --depth 1 \
+            https://github.com/BigfootACA/simple-init.git \
+            Platforms/OnePlus/SimpleInit
 
-          echo ""
-          echo "========== 所有 LanaiPkg 相关文件 =========="
-          find . -iname "*Lanai*" -not -path "./.git/*" 2>/dev/null
+      - name: Fix SimpleInit.dec references in .inf files
+        run: |
+          find Platforms/OnePlus/SimpleInit -name "*.inf" -type f -exec \
+            sed -i -E 's|^([[:space:]]*)SimpleInit\.dec[[:space:]]*$|\1SimpleInit/SimpleInit.dec|' {} \;
 
-          echo ""
-          echo "========== KailuaPkg.dsc.inc 的完整 LibraryClasses =========="
-          INC=$(find . -name "KailuaPkg.dsc.inc" -not -path "./.git/*" 2>/dev/null | head -1)
-          if [ -n "$INC" ]; then
-            echo "File: $INC"
-            awk '/^\[LibraryClasses\]/{f=1} f{print} /^\[/{if(f && $0 !~ /LibraryClasses/){exit}}' "$INC"
-          else
-            echo "(KailuaPkg.dsc.inc not found)"
+      - name: Strip ArmGicLib dependency
+        run: |
+          BOOTLINUX="Platforms/OnePlus/SimpleInit/src/linux-boot/SimpleInitBootLinux.inf"
+          sed -i -E '/^[[:space:]]*ArmGicLib[[:space:]]*$/d' "$BOOTLINUX"
+
+      - name: Auto-scan and resolve SimpleInit library dependencies
+        run: |
+          python3 << 'PYEOF'
+          import os
+          import re
+          import glob
+
+          SIMPLE_ROOT = "Platforms/OnePlus/SimpleInit"
+          DSC = "Platforms/OnePlus/astonPkg/aston.dsc"
+
+          # 1. 收集所有"标准库池"里的类 -> inf 映射
+          lib_pool = {}
+
+          def scan_dsc(path):
+              if not os.path.exists(path):
+                  return
+              in_lib = False
+              for line in open(path, errors='ignore'):
+                  s = line.strip()
+                  if re.match(r'^\[LibraryClasses', s):
+                      in_lib = True
+                      continue
+                  if in_lib and s.startswith('['):
+                      in_lib = False
+                      continue
+                  if in_lib and '|' in s and not s.startswith('#'):
+                      parts = s.split('|', 1)
+                      cls = parts[0].strip()
+                      p = parts[1].strip()
+                      if p.startswith('!') or p.startswith('$'):
+                          continue
+                      if cls and p:
+                          lib_pool[cls] = p
+
+          # 从公共 DSC/INC 里收集
+          for p in [
+              "Mu_Basecore/MdePkg/MdePkg.dsc",
+              "Mu_Basecore/MdeModulePkg/MdeModulePkg.dsc",
+              "Mu_Basecore/ArmPkg/ArmPkg.dsc",
+              "Silicon/Silicium/SiliciumPkg/SiliciumPkg.dsc.inc",
+              "Silicon/Qualcomm/KailuaPkg/KailuaPkg.dsc.inc",
+          ]:
+              scan_dsc(p)
+
+          # 也从每个 .inf 的 LIBRARY_CLASS 声明里收集（fallback）
+          for pattern in [
+              "Mu_Basecore/**/*.inf",
+              "Common/Mu/**/*.inf",
+              "Common/Mu_OEM_Sample/**/*.inf",
+              "Silicon/**/*.inf",
+              "Silicium-ACPI/**/*.inf",
+          ]:
+              for inf in glob.glob(pattern, recursive=True):
+                  try:
+                      content = open(inf, errors='ignore').read()
+                      for m in re.finditer(r'LIBRARY_CLASS\s*=\s*([\w\-]+)', content):
+                          cls = m.group(1)
+                          if cls not in lib_pool:
+                              lib_pool[cls] = os.path.relpath(inf, ".")
+                  except:
+                      pass
+
+          print(f"=== 库池大小: {len(lib_pool)} ===")
+
+          # 2. SimpleInit 所有 .inf 需要的库类
+          needed = set()
+          for inf in glob.glob(f"{SIMPLE_ROOT}/**/*.inf", recursive=True):
+              in_lib = False
+              for line in open(inf, errors='ignore'):
+                  s = line.strip()
+                  if re.match(r'^\[LibraryClasses(\.|$)', s):
+                      in_lib = True
+                      continue
+                  if in_lib and s.startswith('['):
+                      in_lib = False
+                      continue
+                  if in_lib and s and not s.startswith('#'):
+                      needed.add(s.split('|')[0].strip())
+
+          print(f"=== SimpleInit 需要: {len(needed)} 个库类 ===")
+          for n in sorted(needed):
+              print(f"  need: {n}")
+
+          # 3. aston.dsc 里已经声明的
+          already = set()
+          in_lib = False
+          for line in open(DSC, errors='ignore'):
+              s = line.strip()
+              if re.match(r'^\[LibraryClasses', s):
+                  in_lib = True
+                  continue
+              if in_lib and s.startswith('['):
+                  in_lib = False
+                  continue
+              if in_lib and '|' in s:
+                  already.add(s.split('|', 1)[0].strip())
+
+          print(f"=== aston.dsc 已声明: {len(already)} 个 ===")
+
+          # 4. 计算差集
+          missing = sorted(needed - already)
+          print(f"\n=== 需要补充 ({len(missing)}) ===")
+          resolved = []
+          unresolved = []
+          for cls in missing:
+              if cls in lib_pool:
+                  resolved.append(f"{cls}|{lib_pool[cls]}")
+                  print(f"  [OK] {cls} -> {lib_pool[cls]}")
+              else:
+                  unresolved.append(cls)
+                  print(f"  [FAIL] {cls}  (库里没有实现)")
+
+          # 5. 写入结果
+          with open("/tmp/simpleinit_libs.txt", "w") as f:
+              for r in resolved:
+                  f.write(r + "\n")
+
+          if unresolved:
+              print(f"\n!!! 未解析的库: {unresolved}")
+          PYEOF
+
+      - name: Patch aston.dsc
+        run: |
+          DSC="Platforms/OnePlus/astonPkg/aston.dsc"
+          INC="Platforms/OnePlus/SimpleInit/SimpleInit.inc"
+
+          if grep -q "SimpleInit injected begin" "$DSC"; then
+            echo "DSC already patched."
+            exit 0
           fi
 
-          echo ""
-          echo "========== LanaiPkg.dsc.inc 的完整 LibraryClasses =========="
-          INC2=$(find . -name "LanaiPkg.dsc.inc" -not -path "./.git/*" 2>/dev/null | head -1)
-          if [ -n "$INC2" ]; then
-            echo "File: $INC2"
-            awk '/^\[LibraryClasses\]/{f=1} f{print} /^\[/{if(f && $0 !~ /LibraryClasses/){exit}}' "$INC2"
-          else
-            echo "(LanaiPkg.dsc.inc not found)"
-          fi
+          python3 << 'PYEOF'
+          import os
 
-          echo ""
-          echo "========== BootLogoLib 在整个仓库里有哪些实现 =========="
-          grep -rn "LIBRARY_CLASS.*BootLogoLib\|BootLogoLib" \
-            --include="*.inf" --include="*.inc" --include="*.dsc" \
-            . 2>/dev/null | grep -v "^./.git" | head -20 || echo "(none)"
+          dsc = "Platforms/OnePlus/astonPkg/aston.dsc"
+          inc = "Platforms/OnePlus/SimpleInit/SimpleInit.inc"
+          auto_file = "/tmp/simpleinit_libs.txt"
+
+          def section(path, name):
+              out, inside = [], False
+              for line in open(path):
+                  s = line.strip()
+                  if s == '[' + name + ']':
+                      inside = True
+                      continue
+                  if inside and s.startswith('[') and s.endswith(']'):
+                      break
+                  if inside:
+                      out.append(line.rstrip('\n'))
+              return out
+
+          SIMPLE_PREFIXES = ('libs/', 'src/')
+          PATH_SUBSTITUTIONS = {
+              'EmbeddedPkg/Library/FdtLib/FdtLib.inf':
+                  'MdePkg/Library/BaseFdtLib/BaseFdtLib.inf',
+          }
+
+          def fix_path(path):
+              path = path.strip()
+              if path in PATH_SUBSTITUTIONS:
+                  return PATH_SUBSTITUTIONS[path]
+              if any(path.startswith(p) for p in SIMPLE_PREFIXES):
+                  return 'SimpleInit/' + path
+              return path
+
+          def prefix_lib(l):
+              l = l.strip()
+              if not l or l.startswith('#'):
+                  return None
+              if '|' in l:
+                  cls, p = l.split('|', 1)
+                  return f'{cls.strip()}|{fix_path(p)}'
+              return fix_path(l)
+
+          def prefix_comp(l):
+              l = l.strip()
+              if not l or l.startswith('#'):
+                  return None
+              return fix_path(l)
+
+          libs = [p for p in (prefix_lib(l) for l in section(inc, 'LibraryClasses')) if p]
+          comps = [p for p in (prefix_comp(l) for l in section(inc, 'Components')) if p]
+
+          auto_libs = []
+          if os.path.exists(auto_file):
+              for line in open(auto_file):
+                  line = line.strip()
+                  if line:
+                      auto_libs.append(line)
+
+          with open(dsc, 'a') as f:
+              f.write('\n# ===== SimpleInit injected begin =====\n')
+              if libs:
+                  f.write('[LibraryClasses]\n')
+                  for l in libs:
+                      f.write('  ' + l + '\n')
+              if comps:
+                  f.write('\n[Components]\n')
+                  for c in comps:
+                      f.write('  ' + c + '\n')
+              if auto_libs:
+                  f.write('\n# ===== Auto-resolved libs =====\n')
+                  f.write('[LibraryClasses]\n')
+                  for l in auto_libs:
+                      f.write('  ' + l + '\n')
+              f.write('# ===== SimpleInit injected end =====\n')
+
+          print(f'Injected {len(libs)} explicit libs, {len(comps)} components, {len(auto_libs)} auto libs')
+          PYEOF
+
+      - name: Setup environment and build
+        run: |
+          bash ./setup_env.sh -p apt
+          python3 build_uefi.py -d aston
+
+      - name: Locate outputs
+        if: always()
+        run: |
+          echo "=== Mu-aston images ==="
+          find . -iname "Mu-aston*" -not -path "./.git/*" 2>/dev/null || true
+          echo "=== SimpleInit.efi ==="
+          find . -iname "SimpleInit*.efi" -not -path "./.git/*" 2>/dev/null || true
+          echo "=== Build/astonPkg tree ==="
+          find Build/astonPkg -maxdepth 3 -type f 2>/dev/null | head -50 || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mu-aston-with-SimpleInit
+          path: |
+            **/Mu-aston*
+            **/SimpleInit*.efi
+          if-no-files-found: warn
+          retention-days: 30
