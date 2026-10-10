@@ -1,0 +1,37 @@
+name: Dump STBLib.inf
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Clone simple-init
+        run: |
+          rm -rf Platforms/OnePlus/SimpleInit
+          git clone --recursive --depth 1 \
+            https://github.com/BigfootACA/simple-init.git \
+            Platforms/OnePlus/SimpleInit
+
+      - name: Dump
+        run: |
+          echo "=== STBLib.inf raw content ==="
+          cat -n Platforms/OnePlus/SimpleInit/libs/stb/STBLib.inf
+          echo ""
+          echo "=== ls libs/stb/ ==="
+          ls -la Platforms/OnePlus/SimpleInit/libs/stb/
+          echo ""
+          echo "=== ls libs/ ==="
+          ls -la Platforms/OnePlus/SimpleInit/libs/
+          echo ""
+          echo "=== .gitmodules ==="
+          cat Platforms/OnePlus/SimpleInit/.gitmodules
+          echo ""
+          echo "=== SimpleInit.dec raw content ==="
+          cat -n Platforms/OnePlus/SimpleInit/SimpleInit.dec
