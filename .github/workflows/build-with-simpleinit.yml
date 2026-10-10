@@ -19,59 +19,107 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Clone simple-init into External/
+      - name: Clone simple-init
         run: |
           mkdir -p External
           git clone --recursive --depth 1 \
             https://github.com/BigfootACA/simple-init.git \
             External/simple-init
-          echo "=== simple-init structure ==="
-          ls External/simple-init/
-          echo "=== SimpleInit.inc ==="
-          cat External/simple-init/SimpleInit.inc 2>/dev/null || echo "NOT FOUND at root"
-          find External/simple-init -name "SimpleInit.inc" -o -name "*.dsc" | head
 
-      - name: Patch platform DSC files
+      - name: Probe simple-init structure
+        id: probe
         run: |
-          # 找出所有包含 aston/sm8550 的 DSC 文件
-          DSC_FILES=$(grep -rl -i "aston\|sm8550" --include="*.dsc" . 2>/dev/null | grep -v "\.git")
+          echo "===== simple-init root ====="
+          ls -la External/simple-init/ | head -40
 
-          if [ -z "$DSC_FILES" ]; then
-            echo "WARNING: No DSC found with aston/sm8550. Dumping all DSC:"
-            find . -name "*.dsc" -not -path "./.git/*" | head -40
+          echo ""
+          echo "===== All .inc files in simple-init ====="
+          find External/simple-init -name "*.inc" -not -path "*/.git/*" 2>/dev/null
+
+          echo ""
+          echo "===== Find SimpleInit.inc ====="
+          SIMPLEINC=$(find External/simple-init -name "SimpleInit.inc" -not -path "*/.git/*" 2>/dev/null | head -1)
+          echo "SIMPLEINC=$SIMPLEINC"
+          echo "simpleinc_path=$SIMPLEINC" >> $GITHUB_OUTPUT
+
+          echo ""
+          echo "===== Content of SimpleInit.inc (if found) ====="
+          if [ -n "$SIMPLEINC" ]; then
+            cat "$SIMPLEINC"
+          else
+            echo "NOT FOUND"
+          fi
+
+      - name: Probe Mu-Silicium DSC targets
+        id: probe_dsc
+        run: |
+          echo "===== DSC files mentioning aston ====="
+          grep -rl -i "aston" --include="*.dsc" . 2>/dev/null | grep -v "\.git" || echo "NONE"
+
+          echo ""
+          echo "===== DSC files mentioning sm8550 ====="
+          grep -rl -i "sm8550" --include="*.dsc" . 2>/dev/null | grep -v "\.git" || echo "NONE"
+
+          echo ""
+          echo "===== All DSC files (for reference) ====="
+          find . -name "*.dsc" -not -path "./.git/*" 2>/dev/null | head -30
+
+          MAIN_DSC=$(grep -rl -i "aston" --include="*.dsc" . 2>/dev/null | grep -v "\.git" | head -1)
+          echo ""
+          echo "MAIN_DSC=$MAIN_DSC"
+          echo "main_dsc=$MAIN_DSC" >> $GITHUB_OUTPUT
+
+          if [ -n "$MAIN_DSC" ]; then
+            echo ""
+            echo "===== All !include lines in main DSC ====="
+            grep -n "^!include" "$MAIN_DSC" || echo "NONE"
+
+            echo ""
+            echo "===== Last 30 lines of main DSC ====="
+            tail -30 "$MAIN_DSC"
+          fi
+
+      - name: Patch DSC (only if SimpleInit.inc found)
+        if: steps.probe.outputs.simpleinc_path != ''
+        run: |
+          SIMPLEINC="${{ steps.probe.outputs.simpleinc_path }}"
+          MAIN_DSC="${{ steps.probe_dsc.outputs.main_dsc }}"
+
+          echo "SIMPLEINC: $SIMPLEINC"
+          echo "MAIN_DSC: $MAIN_DSC"
+
+          if [ -z "$MAIN_DSC" ] || [ ! -f "$MAIN_DSC" ]; then
+            echo "ERROR: No main DSC found, skipping patch."
             exit 1
           fi
 
-          echo "Found DSC files to patch:"
-          echo "$DSC_FILES"
+          # 计算从 DSC 所在目录到 SimpleInit.inc 的相对路径
+          DSC_DIR=$(dirname "$MAIN_DSC")
+          REL_PATH=$(realpath --relative-to="$DSC_DIR" "$PWD/$SIMPLEINC")
+          echo "Relative path from DSC: $REL_PATH"
 
-          for f in $DSC_FILES; do
-            echo "=== Patching $f ==="
-            # 计算从 DSC 所在目录到 External/simple-init 的相对路径
-            DSC_DIR=$(dirname "$f")
-            REL_PATH=$(realpath --relative-to="$DSC_DIR" "$PWD/External/simple-init")
+          # 检查文件是否存在
+          if [ ! -f "$PWD/$SIMPLEINC" ]; then
+            echo "ERROR: $SIMPLEINC does not exist, skipping patch."
+            exit 1
+          fi
 
-            # 避免重复注入
-            if grep -q "SimpleInit.inc" "$f"; then
-              echo "Already patched, skipping"
-              continue
-            fi
+          # 避免重复
+          if grep -q "SimpleInit.inc" "$MAIN_DSC"; then
+            echo "Already patched, skipping."
+            exit 0
+          fi
 
-            # 在 [Components] 段落末尾之前，或者文件末尾追加 include
-            # 优先找类似 !include 的位置
-            if grep -q "^!include" "$f"; then
-              # 在最后一个 !include 后面插入
-              LAST_INCLUDE=$(grep -n "^!include" "$f" | tail -1 | cut -d: -f1)
-              sed -i "${LAST_INCLUDE}a !include ${REL_PATH}/SimpleInit.inc" "$f"
-            else
-              # 没有 !include，直接追加到文件末尾
-              echo "" >> "$f"
-              echo "!include ${REL_PATH}/SimpleInit.inc" >> "$f"
-            fi
+          # 插入到最后一个 !include 之后
+          LAST_INCLUDE=$(grep -n "^!include" "$MAIN_DSC" | tail -1 | cut -d: -f1)
+          if [ -n "$LAST_INCLUDE" ]; then
+            sed -i "${LAST_INCLUDE}a !include ${REL_PATH}" "$MAIN_DSC"
+          else
+            printf '\n!include %s\n' "$REL_PATH" >> "$MAIN_DSC"
+          fi
 
-            echo "--- Result ---"
-            grep -n "SimpleInit" "$f"
-          done
+          echo "=== Result ==="
+          grep -n "SimpleInit" "$MAIN_DSC"
 
       - name: Build UEFI
         run: |
@@ -79,17 +127,19 @@ jobs:
           python3 build_uefi.py -d aston
 
       - name: Locate outputs
+        if: always()
         run: |
-          echo "=== Search for Mu-aston images ==="
-          find . -iname "Mu-aston*" -not -path "./.git/*" 2>/dev/null | tee /tmp/outputs.txt
-          echo "=== Search for SimpleInit.efi ==="
+          echo "=== Mu-aston images ==="
+          find . -iname "Mu-aston*" -not -path "./.git/*" 2>/dev/null
+          echo "=== SimpleInit*.efi ==="
           find . -iname "SimpleInit*.efi" -not -path "./.git/*" 2>/dev/null
           echo "=== Build dir ==="
           ls -la Build/ 2>/dev/null || echo "no Build/"
-          echo "=== Top level after build ==="
+          echo "=== Top level ==="
           ls -la
 
       - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Mu-aston-with-SimpleInit
