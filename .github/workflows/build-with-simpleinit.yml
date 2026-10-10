@@ -27,17 +27,6 @@ jobs:
             https://github.com/BigfootACA/simple-init.git \
             Platforms/OnePlus/SimpleInit
 
-      - name: Verify simple-init layout
-        run: |
-          echo "=== simple-init root ==="
-          ls -la Platforms/OnePlus/SimpleInit/
-          echo "=== SimpleInit.dec ==="
-          find Platforms/OnePlus/SimpleInit -maxdepth 1 -name "SimpleInit.dec"
-          echo "=== SimpleInit.inc ==="
-          find Platforms/OnePlus/SimpleInit -maxdepth 1 -name "SimpleInit.inc"
-          echo "=== SimpleInit.inc raw content ==="
-          cat Platforms/OnePlus/SimpleInit/SimpleInit.inc
-
       - name: Patch aston.dsc
         run: |
           DSC="Platforms/OnePlus/astonPkg/aston.dsc"
@@ -65,11 +54,18 @@ jobs:
                       out.append(line.rstrip('\n'))
               return out
 
-          # 只有这些前缀的路径才属于 SimpleInit 包内部
           SIMPLE_PREFIXES = ('libs/', 'src/')
+
+          # 路径重定向表：SimpleInit.inc 引用了 MU 里不存在的包，映射到等效项
+          PATH_SUBSTITUTIONS = {
+              'EmbeddedPkg/Library/FdtLib/FdtLib.inf':
+                  'MdePkg/Library/BaseFdtLib/BaseFdtLib.inf',
+          }
 
           def fix_path(path):
               path = path.strip()
+              if path in PATH_SUBSTITUTIONS:
+                  return PATH_SUBSTITUTIONS[path]
               if any(path.startswith(p) for p in SIMPLE_PREFIXES):
                   return 'SimpleInit/' + path
               return path
@@ -107,12 +103,12 @@ jobs:
           print(f'Injected {len(libs)} libs, {len(comps)} components')
           for l in libs:
               print('  LIB:', l)
-          for c in comps[:5]:
+          for c in comps:
               print('  COMP:', c)
           PYEOF
 
           echo "=== tail of DSC ==="
-          tail -60 "$DSC"
+          tail -80 "$DSC"
 
       - name: Setup environment and build
         run: |
@@ -128,7 +124,7 @@ jobs:
           find . -iname "SimpleInit*.efi" -not -path "./.git/*" 2>/dev/null || true
           echo "=== Build dir ==="
           ls -la Build/ 2>/dev/null || echo "no Build/"
-          echo "=== Build/astonPkg tree (if exists) ==="
+          echo "=== Build/astonPkg tree ==="
           find Build/astonPkg -maxdepth 3 -type f 2>/dev/null | head -50 || true
 
       - name: Upload artifacts
