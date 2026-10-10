@@ -26,100 +26,45 @@ jobs:
             https://github.com/BigfootACA/simple-init.git \
             External/simple-init
 
-      - name: Probe simple-init structure
-        id: probe
+      - name: Patch aston.dsc with SimpleInit components
         run: |
-          echo "===== simple-init root ====="
-          ls -la External/simple-init/ | head -40
+          MAIN_DSC="Platforms/OnePlus/astonPkg/aston.dsc"
+          SIMPLEINC="External/simple-init/SimpleInit.inc"
 
-          echo ""
-          echo "===== All .inc files in simple-init ====="
-          find External/simple-init -name "*.inc" -not -path "*/.git/*" 2>/dev/null
-
-          echo ""
-          echo "===== Find SimpleInit.inc ====="
-          SIMPLEINC=$(find External/simple-init -name "SimpleInit.inc" -not -path "*/.git/*" 2>/dev/null | head -1)
-          echo "SIMPLEINC=$SIMPLEINC"
-          echo "simpleinc_path=$SIMPLEINC" >> $GITHUB_OUTPUT
-
-          echo ""
-          echo "===== Content of SimpleInit.inc (if found) ====="
-          if [ -n "$SIMPLEINC" ]; then
-            cat "$SIMPLEINC"
-          else
-            echo "NOT FOUND"
-          fi
-
-      - name: Probe Mu-Silicium DSC targets
-        id: probe_dsc
-        run: |
-          echo "===== DSC files mentioning aston ====="
-          grep -rl -i "aston" --include="*.dsc" . 2>/dev/null | grep -v "\.git" || echo "NONE"
-
-          echo ""
-          echo "===== DSC files mentioning sm8550 ====="
-          grep -rl -i "sm8550" --include="*.dsc" . 2>/dev/null | grep -v "\.git" || echo "NONE"
-
-          echo ""
-          echo "===== All DSC files (for reference) ====="
-          find . -name "*.dsc" -not -path "./.git/*" 2>/dev/null | head -30
-
-          MAIN_DSC=$(grep -rl -i "aston" --include="*.dsc" . 2>/dev/null | grep -v "\.git" | head -1)
-          echo ""
-          echo "MAIN_DSC=$MAIN_DSC"
-          echo "main_dsc=$MAIN_DSC" >> $GITHUB_OUTPUT
-
-          if [ -n "$MAIN_DSC" ]; then
-            echo ""
-            echo "===== All !include lines in main DSC ====="
-            grep -n "^!include" "$MAIN_DSC" || echo "NONE"
-
-            echo ""
-            echo "===== Last 30 lines of main DSC ====="
-            tail -30 "$MAIN_DSC"
-          fi
-
-      - name: Patch DSC (only if SimpleInit.inc found)
-        if: steps.probe.outputs.simpleinc_path != ''
-        run: |
-          SIMPLEINC="${{ steps.probe.outputs.simpleinc_path }}"
-          MAIN_DSC="${{ steps.probe_dsc.outputs.main_dsc }}"
-
-          echo "SIMPLEINC: $SIMPLEINC"
-          echo "MAIN_DSC: $MAIN_DSC"
-
-          if [ -z "$MAIN_DSC" ] || [ ! -f "$MAIN_DSC" ]; then
-            echo "ERROR: No main DSC found, skipping patch."
+          if [ ! -f "$MAIN_DSC" ] || [ ! -f "$SIMPLEINC" ]; then
+            echo "ERROR: Missing $MAIN_DSC or $SIMPLEINC"
             exit 1
           fi
 
-          # 计算从 DSC 所在目录到 SimpleInit.inc 的相对路径
-          DSC_DIR=$(dirname "$MAIN_DSC")
-          REL_PATH=$(realpath --relative-to="$DSC_DIR" "$PWD/$SIMPLEINC")
-          echo "Relative path from DSC: $REL_PATH"
-
-          # 检查文件是否存在
-          if [ ! -f "$PWD/$SIMPLEINC" ]; then
-            echo "ERROR: $SIMPLEINC does not exist, skipping patch."
-            exit 1
-          fi
-
-          # 避免重复
-          if grep -q "SimpleInit.inc" "$MAIN_DSC"; then
+          # 避免重复注入
+          if grep -q "SimpleInit" "$MAIN_DSC"; then
             echo "Already patched, skipping."
             exit 0
           fi
 
-          # 插入到最后一个 !include 之后
-          LAST_INCLUDE=$(grep -n "^!include" "$MAIN_DSC" | tail -1 | cut -d: -f1)
-          if [ -n "$LAST_INCLUDE" ]; then
-            sed -i "${LAST_INCLUDE}a !include ${REL_PATH}" "$MAIN_DSC"
-          else
-            printf '\n!include %s\n' "$REL_PATH" >> "$MAIN_DSC"
-          fi
+          # 生成路径前缀为 External/simple-init/ 的 LibraryClasses 和 Components
+          echo "" >> "$MAIN_DSC"
+          echo "# ===== SimpleInit injected begin =====" >> "$MAIN_DSC"
+          echo "[LibraryClasses]" >> "$MAIN_DSC"
 
-          echo "=== Result ==="
-          grep -n "SimpleInit" "$MAIN_DSC"
+          # 提取 SimpleInit.inc 的 [LibraryClasses] 段，加上路径前缀
+          awk '/^\[LibraryClasses\]/{flag=1; next} /^\[/{flag=0} flag' "$SIMPLEINC" \
+            | sed 's|^  \([A-Za-z0-9_]*\)|  \1|; s|\(|External/simple-init/|; s|External/simple-init/|External/simple-init/|; s|\.inf|.inf|' \
+            | sed 's|External/simple-init/External/simple-init/|External/simple-init/|' \
+            >> "$MAIN_DSC"
+
+          echo "" >> "$MAIN_DSC"
+          echo "[Components]" >> "$MAIN_DSC"
+
+          awk '/^\[Components\]/{flag=1; next} /^\[/{flag=0} flag' "$SIMPLEINC" \
+            | grep -v '^\s*$' \
+            | sed 's|^  |  External/simple-init/|' \
+            >> "$MAIN_DSC"
+
+          echo "# ===== SimpleInit injected end =====" >> "$MAIN_DSC"
+
+          echo "=== Injected section ==="
+          tail -60 "$MAIN_DSC"
 
       - name: Build UEFI
         run: |
@@ -135,8 +80,6 @@ jobs:
           find . -iname "SimpleInit*.efi" -not -path "./.git/*" 2>/dev/null
           echo "=== Build dir ==="
           ls -la Build/ 2>/dev/null || echo "no Build/"
-          echo "=== Top level ==="
-          ls -la
 
       - name: Upload artifacts
         if: always()
