@@ -68,6 +68,7 @@ jobs:
 
       - name: Build UEFI
         run: |
+          export PACKAGES_PATH="$PWD:$PWD/External/simple-init"
           bash ./setup_env.sh -p apt
           python3 build_uefi.py -d aston
 
