@@ -6,11 +6,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 180
+
     steps:
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android
           df -h
 
       - name: Checkout Mu-Silicium
@@ -21,54 +22,116 @@ jobs:
 
       - name: Clone simple-init
         run: |
+          rm -rf External
           mkdir -p External
           git clone --recursive --depth 1 \
             https://github.com/BigfootACA/simple-init.git \
             External/simple-init
 
+      - name: Verify simple-init layout
+        run: |
+          echo "=== simple-init root ==="
+          ls -la External/simple-init/
+          echo "=== Looking for SimpleInit.dec ==="
+          find External/simple-init -maxdepth 2 -name "SimpleInit.dec"
+          echo "=== Looking for SimpleInit.inc ==="
+          find External/simple-init -maxdepth 2 -name "SimpleInit.inc"
+
+      - name: Patch build_uefi.py to add simple-init to PACKAGES_PATH
+        run: |
+          cp build_uefi.py build_uefi.py.bak
+
+          python3 << 'PYEOF'
+          import os
+          pwd = os.environ['PWD']
+          extra = pwd + '/External/simple-init'
+
+          with open('build_uefi.py', 'r') as f:
+              content = f.read()
+
+          if 'External/simple-init' in content:
+              print('Already patched, skipping.')
+          else:
+              import re
+              # 覆盖所有可能的写法
+              patterns = [
+                  (r"(PACKAGES_PATH\s*=\s*)", r"\1'" + extra + ":' + "),
+                  (r"(['\"]PACKAGES_PATH['\"]\s*:\s*)", r"\1'" + extra + ":' + "),
+              ]
+              patched = False
+              for pat, repl in patterns:
+                  new_content, n = re.subn(pat, repl, content, count=1)
+                  if n:
+                      content = new_content
+                      patched = True
+                      break
+
+              if not patched:
+                  print('WARN: no PACKAGES_PATH assignment found in build_uefi.py')
+                  print('Dumping first 80 lines for debugging:')
+                  print('\n'.join(content.splitlines()[:80]))
+                  raise SystemExit(1)
+
+              with open('build_uefi.py', 'w') as f:
+                  f.write(content)
+              print('Patched build_uefi.py')
+
+          print('=== PACKAGES_PATH references ===')
+          PYEOF
+
+          grep -n "PACKAGES_PATH" build_uefi.py
+
       - name: Patch aston.dsc with SimpleInit components
         run: |
-          MAIN_DSC="Platforms/OnePlus/astonPkg/aston.dsc"
-          SIMPLEINC="External/simple-init/SimpleInit.inc"
+          DSC="Platforms/OnePlus/astonPkg/aston.dsc"
+          INC="External/simple-init/SimpleInit.inc"
 
-          if [ ! -f "$MAIN_DSC" ] || [ ! -f "$SIMPLEINC" ]; then
-            echo "ERROR: Missing $MAIN_DSC or $SIMPLEINC"
-            exit 1
-          fi
+          [ -f "$DSC" ] || { echo "ERROR: $DSC not found"; exit 1; }
+          [ -f "$INC" ] || { echo "ERROR: $INC not found"; exit 1; }
 
-          # 避免重复注入
-          if grep -q "SimpleInit" "$MAIN_DSC"; then
-            echo "Already patched, skipping."
+          if grep -q "SimpleInit" "$DSC"; then
+            echo "DSC already patched."
             exit 0
           fi
 
-          # 生成路径前缀为 External/simple-init/ 的 LibraryClasses 和 Components
-          echo "" >> "$MAIN_DSC"
-          echo "# ===== SimpleInit injected begin =====" >> "$MAIN_DSC"
-          echo "[LibraryClasses]" >> "$MAIN_DSC"
+          python3 << 'PYEOF'
+          dsc_path = "Platforms/OnePlus/astonPkg/aston.dsc"
+          inc_path = "External/simple-init/SimpleInit.inc"
 
-          # 提取 SimpleInit.inc 的 [LibraryClasses] 段，加上路径前缀
-          awk '/^\[LibraryClasses\]/{flag=1; next} /^\[/{flag=0} flag' "$SIMPLEINC" \
-            | sed 's|^  \([A-Za-z0-9_]*\)|  \1|; s|\(|External/simple-init/|; s|External/simple-init/|External/simple-init/|; s|\.inf|.inf|' \
-            | sed 's|External/simple-init/External/simple-init/|External/simple-init/|' \
-            >> "$MAIN_DSC"
+          def extract_section(path, section):
+              out, inside = [], False
+              for line in open(path):
+                  s = line.strip()
+                  if s == '[' + section + ']':
+                      inside = True
+                      continue
+                  if inside and s.startswith('[') and s.endswith(']'):
+                      break
+                  if inside:
+                      out.append(line.rstrip('\n'))
+              return out
 
-          echo "" >> "$MAIN_DSC"
-          echo "[Components]" >> "$MAIN_DSC"
+          libs = [l for l in extract_section(inc_path, 'LibraryClasses') if l.strip()]
+          comps = [l for l in extract_section(inc_path, 'Components') if l.strip()]
 
-          awk '/^\[Components\]/{flag=1; next} /^\[/{flag=0} flag' "$SIMPLEINC" \
-            | grep -v '^\s*$' \
-            | sed 's|^  |  External/simple-init/|' \
-            >> "$MAIN_DSC"
+          with open(dsc_path, 'a') as f:
+              f.write('\n# ===== SimpleInit injected begin =====\n')
+              f.write('[LibraryClasses]\n')
+              for l in libs:
+                  f.write(l + '\n')
+              f.write('\n[Components]\n')
+              for c in comps:
+                  f.write(c + '\n')
+              f.write('# ===== SimpleInit injected end =====\n')
 
-          echo "# ===== SimpleInit injected end =====" >> "$MAIN_DSC"
+          print(f'Injected {len(libs)} libs, {len(comps)} components')
+          PYEOF
 
-          echo "=== Injected section ==="
-          tail -60 "$MAIN_DSC"
+          echo "=== tail of DSC ==="
+          tail -40 "$DSC"
 
-      - name: Build UEFI
+      - name: Build UEFI for aston
         run: |
-          export PACKAGES_PATH="$PWD:$PWD/External/simple-init"
           bash ./setup_env.sh -p apt
           python3 build_uefi.py -d aston
 
@@ -76,11 +139,9 @@ jobs:
         if: always()
         run: |
           echo "=== Mu-aston images ==="
-          find . -iname "Mu-aston*" -not -path "./.git/*" 2>/dev/null
-          echo "=== SimpleInit*.efi ==="
-          find . -iname "SimpleInit*.efi" -not -path "./.git/*" 2>/dev/null
-          echo "=== Build dir ==="
-          ls -la Build/ 2>/dev/null || echo "no Build/"
+          find . -iname "Mu-aston*" -not -path "./.git/*" 2>/dev/null || true
+          echo "=== SimpleInit.efi ==="
+          find . -iname "SimpleInit*.efi" -not -path "./.git/*" 2>/dev/null || true
 
       - name: Upload artifacts
         if: always()
