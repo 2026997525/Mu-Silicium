@@ -1,4 +1,4 @@
-name: Dump ArmGic info
+name: Diagnose Aston DSC
 
 on:
   workflow_dispatch:
@@ -12,38 +12,35 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Clone simple-init
+      - name: Dump DSC structure
         run: |
-          rm -rf Platforms/OnePlus/SimpleInit
-          git clone --recursive --depth 1 \
-            https://github.com/BigfootACA/simple-init.git \
-            Platforms/OnePlus/SimpleInit
-
-      - name: Dump
-        run: |
-          echo "=== aston.dsc 里所有 ArmGicLib ==="
-          grep -rn "ArmGicLib" Platforms/OnePlus/astonPkg/ || echo "(none)"
+          echo "========== aston.dsc include 指令 =========="
+          grep -n "!include\|!INCLUDE" Platforms/OnePlus/astonPkg/aston.dsc || echo "(none)"
 
           echo ""
-          echo "=== Mu_Basecore 里可用的 ArmGicLib 实现 ==="
-          find Mu_Basecore -iname "ArmGicLib.inf" 2>/dev/null || echo "(none)"
-          find Common -iname "ArmGicLib.inf" 2>/dev/null || true
-          find Silicon -iname "ArmGicLib.inf" 2>/dev/null || true
-
-          echo ""
-          echo "=== SimpleInitMain.inf ==="
-          cat -n Platforms/OnePlus/SimpleInit/src/main/SimpleInitMain.inf
-
-          echo ""
-          echo "=== SimpleInit.inc LibraryClasses 段 ==="
+          echo "========== aston.dsc [LibraryClasses] 段 =========="
           awk '/^\[LibraryClasses\]/{f=1} f{print} /^\[/{if(f && $0 !~ /LibraryClasses/){exit}}' \
-            Platforms/OnePlus/SimpleInit/SimpleInit.inc
+            Platforms/OnePlus/astonPkg/aston.dsc
 
           echo ""
-          echo "=== SimpleInitBootLinux.inf ==="
-          cat -n Platforms/OnePlus/SimpleInit/src/linux-boot/SimpleInitBootLinux.inf
+          echo "========== 找所有可用的平台 DSC =========="
+          find Platforms -name "*.dsc" -maxdepth 3 2>/dev/null | head -20
 
           echo ""
-          echo "=== SimpleInitGUI.inf 里的 ArmGicLib 引用 ==="
-          grep -n "ArmGicLib\|LibraryClasses" \
-            Platforms/OnePlus/SimpleInit/src/gui/SimpleInitGUI.inf || true
+          echo "========== SiliciumPkg.dsc.inc 存在性 =========="
+          find . -name "SiliciumPkg.dsc.inc" -not -path "./.git/*" 2>/dev/null
+
+          echo ""
+          echo "========== SiliciumPkg.dsc.inc 的 [LibraryClasses] 段 =========="
+          INC=$(find . -name "SiliciumPkg.dsc.inc" -not -path "./.git/*" 2>/dev/null | head -1)
+          if [ -n "$INC" ]; then
+            awk '/^\[LibraryClasses\]/{f=1} f{print} /^\[/{if(f && $0 !~ /LibraryClasses/){exit}}' "$INC" | head -60
+          fi
+
+          echo ""
+          echo "========== 对比：giulia.dsc（Active 设备）的 include =========="
+          if [ -f "Platforms/OnePlus/giuliaPkg/giulia.dsc" ]; then
+            grep -n "!include\|!INCLUDE" Platforms/OnePlus/giuliaPkg/giulia.dsc || echo "(none)"
+          else
+            find Platforms -iname "*giulia*" -name "*.dsc" 2>/dev/null
+          fi
