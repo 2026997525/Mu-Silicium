@@ -20,13 +20,23 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Clone simple-init
+      - name: Clone simple-init into Platforms/OnePlus/SimpleInit
         run: |
-          rm -rf External
-          mkdir -p External
+          rm -rf Platforms/OnePlus/SimpleInit
           git clone --recursive --depth 1 \
             https://github.com/BigfootACA/simple-init.git \
-            External/simple-init
+            Platforms/OnePlus/SimpleInit
+
+      - name: Verify simple-init layout
+        run: |
+          echo "=== simple-init root ==="
+          ls -la Platforms/OnePlus/SimpleInit/
+          echo "=== SimpleInit.dec ==="
+          find Platforms/OnePlus/SimpleInit -maxdepth 1 -name "SimpleInit.dec"
+          echo "=== SimpleInit.inc ==="
+          find Platforms/OnePlus/SimpleInit -maxdepth 1 -name "SimpleInit.inc"
+          echo "=== SimpleInit.inc raw content ==="
+          cat Platforms/OnePlus/SimpleInit/SimpleInit.inc
 
       - name: Patch aston.dsc
         run: |
@@ -40,7 +50,7 @@ jobs:
 
           python3 << 'PYEOF'
           dsc = "Platforms/OnePlus/astonPkg/aston.dsc"
-          inc = "External/simple-init/SimpleInit.inc"
+          inc = "Platforms/OnePlus/SimpleInit/SimpleInit.inc"
 
           def section(path, name):
               out, inside = [], False
@@ -55,39 +65,54 @@ jobs:
                       out.append(line.rstrip('\n'))
               return out
 
-          libs = [l for l in section(inc, 'LibraryClasses') if l.strip()]
-          comps = [l for l in section(inc, 'Components') if l.strip()]
+          raw_libs = section(inc, 'LibraryClasses')
+          raw_comps = section(inc, 'Components')
 
-          # 路径前面加上 External/simple-init/
-          def prefix(l):
+          def prefix_lib(l):
               l = l.strip()
               if not l or l.startswith('#'):
+                  return None
+              if '|' in l:
+                  cls, path = l.split('|', 1)
+                  cls = cls.strip()
+                  path = path.strip()
+                  if not path.startswith('SimpleInit/'):
+                      path = 'SimpleInit/' + path
+                  return f'{cls}|{path}'
+              if l.startswith('SimpleInit/'):
                   return l
-              # 已经带前缀的不重复加
-              if l.startswith('External/simple-init/'):
-                  return l
-              return 'External/simple-init/' + l
+              return 'SimpleInit/' + l
 
-          libs = [prefix(l) for l in libs]
-          comps = [prefix(l) for l in comps]
+          def prefix_comp(l):
+              l = l.strip()
+              if not l or l.startswith('#'):
+                  return None
+              if l.startswith('SimpleInit/'):
+                  return l
+              return 'SimpleInit/' + l
+
+          libs = [p for p in (prefix_lib(l) for l in raw_libs) if p]
+          comps = [p for p in (prefix_comp(l) for l in raw_comps) if p]
 
           with open(dsc, 'a') as f:
               f.write('\n# ===== SimpleInit injected begin =====\n')
-              f.write('[LibraryClasses]\n')
-              for l in libs:
-                  f.write(l + '\n')
-              f.write('\n[Components]\n')
-              for c in comps:
-                  f.write(c + '\n')
+              if libs:
+                  f.write('[LibraryClasses]\n')
+                  for l in libs:
+                      f.write('  ' + l + '\n')
+              if comps:
+                  f.write('\n[Components]\n')
+                  for c in comps:
+                      f.write('  ' + c + '\n')
               f.write('# ===== SimpleInit injected end =====\n')
 
           print(f'Injected {len(libs)} libs, {len(comps)} components')
           PYEOF
 
           echo "=== tail of DSC ==="
-          tail -40 "$DSC"
+          tail -60 "$DSC"
 
-      - name: Build UEFI
+      - name: Setup environment and build
         run: |
           bash ./setup_env.sh -p apt
           python3 build_uefi.py -d aston
@@ -99,6 +124,10 @@ jobs:
           find . -iname "Mu-aston*" -not -path "./.git/*" 2>/dev/null || true
           echo "=== SimpleInit.efi ==="
           find . -iname "SimpleInit*.efi" -not -path "./.git/*" 2>/dev/null || true
+          echo "=== Build dir ==="
+          ls -la Build/ 2>/dev/null || echo "no Build/"
+          echo "=== Build/astonPkg tree (if exists) ==="
+          find Build/astonPkg -maxdepth 3 -type f 2>/dev/null | head -50 || true
 
       - name: Upload artifacts
         if: always()
