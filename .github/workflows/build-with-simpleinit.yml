@@ -65,8 +65,14 @@ jobs:
                       out.append(line.rstrip('\n'))
               return out
 
-          raw_libs = section(inc, 'LibraryClasses')
-          raw_comps = section(inc, 'Components')
+          # 只有这些前缀的路径才属于 SimpleInit 包内部
+          SIMPLE_PREFIXES = ('libs/', 'src/')
+
+          def fix_path(path):
+              path = path.strip()
+              if any(path.startswith(p) for p in SIMPLE_PREFIXES):
+                  return 'SimpleInit/' + path
+              return path
 
           def prefix_lib(l):
               l = l.strip()
@@ -74,25 +80,17 @@ jobs:
                   return None
               if '|' in l:
                   cls, path = l.split('|', 1)
-                  cls = cls.strip()
-                  path = path.strip()
-                  if not path.startswith('SimpleInit/'):
-                      path = 'SimpleInit/' + path
-                  return f'{cls}|{path}'
-              if l.startswith('SimpleInit/'):
-                  return l
-              return 'SimpleInit/' + l
+                  return f'{cls.strip()}|{fix_path(path)}'
+              return fix_path(l)
 
           def prefix_comp(l):
               l = l.strip()
               if not l or l.startswith('#'):
                   return None
-              if l.startswith('SimpleInit/'):
-                  return l
-              return 'SimpleInit/' + l
+              return fix_path(l)
 
-          libs = [p for p in (prefix_lib(l) for l in raw_libs) if p]
-          comps = [p for p in (prefix_comp(l) for l in raw_comps) if p]
+          libs = [p for p in (prefix_lib(l) for l in section(inc, 'LibraryClasses')) if p]
+          comps = [p for p in (prefix_comp(l) for l in section(inc, 'Components')) if p]
 
           with open(dsc, 'a') as f:
               f.write('\n# ===== SimpleInit injected begin =====\n')
@@ -107,6 +105,10 @@ jobs:
               f.write('# ===== SimpleInit injected end =====\n')
 
           print(f'Injected {len(libs)} libs, {len(comps)} components')
+          for l in libs:
+              print('  LIB:', l)
+          for c in comps[:5]:
+              print('  COMP:', c)
           PYEOF
 
           echo "=== tail of DSC ==="
