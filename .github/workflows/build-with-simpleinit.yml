@@ -29,14 +29,27 @@ jobs:
 
       - name: Rewrite SimpleInit.dec references in .inf files
         run: |
-          echo "=== Before ==="
+          echo "=== Before: SimpleInit.dec references ==="
           grep -rn "SimpleInit.dec" Platforms/OnePlus/SimpleInit/ --include="*.inf" || true
 
           find Platforms/OnePlus/SimpleInit -name "*.inf" -type f -exec \
             sed -i -E 's|^([[:space:]]*)SimpleInit\.dec[[:space:]]*$|\1SimpleInit/SimpleInit.dec|' {} \;
 
-          echo "=== After ==="
+          echo "=== After: SimpleInit.dec references ==="
           grep -rn "SimpleInit.dec" Platforms/OnePlus/SimpleInit/ --include="*.inf" || true
+
+      - name: Strip ArmGicLib dependency from SimpleInitBootLinux
+        run: |
+          BOOTLINUX="Platforms/OnePlus/SimpleInit/src/linux-boot/SimpleInitBootLinux.inf"
+
+          echo "=== Before: ARM LibraryClasses ==="
+          grep -n -A 5 "LibraryClasses.ARM" "$BOOTLINUX" || true
+
+          # 删掉独立的 ArmGicLib 行
+          sed -i -E '/^[[:space:]]*ArmGicLib[[:space:]]*$/d' "$BOOTLINUX"
+
+          echo "=== After: ARM LibraryClasses ==="
+          grep -n -A 5 "LibraryClasses.ARM" "$BOOTLINUX" || true
 
       - name: Patch aston.dsc
         run: |
@@ -129,8 +142,6 @@ jobs:
           find . -iname "Mu-aston*" -not -path "./.git/*" 2>/dev/null || true
           echo "=== SimpleInit.efi ==="
           find . -iname "SimpleInit*.efi" -not -path "./.git/*" 2>/dev/null || true
-          echo "=== Build dir ==="
-          ls -la Build/ 2>/dev/null || echo "no Build/"
           echo "=== Build/astonPkg tree ==="
           find Build/astonPkg -maxdepth 3 -type f 2>/dev/null | head -50 || true
 
