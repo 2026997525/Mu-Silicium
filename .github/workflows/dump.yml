@@ -1,4 +1,4 @@
-name: Dump STBLib.inf
+name: Dump ArmGic info
 
 on:
   workflow_dispatch:
@@ -21,17 +21,29 @@ jobs:
 
       - name: Dump
         run: |
-          echo "=== STBLib.inf raw content ==="
-          cat -n Platforms/OnePlus/SimpleInit/libs/stb/STBLib.inf
+          echo "=== aston.dsc 里所有 ArmGicLib ==="
+          grep -rn "ArmGicLib" Platforms/OnePlus/astonPkg/ || echo "(none)"
+
           echo ""
-          echo "=== ls libs/stb/ ==="
-          ls -la Platforms/OnePlus/SimpleInit/libs/stb/
+          echo "=== Mu_Basecore 里可用的 ArmGicLib 实现 ==="
+          find Mu_Basecore -iname "ArmGicLib.inf" 2>/dev/null || echo "(none)"
+          find Common -iname "ArmGicLib.inf" 2>/dev/null || true
+          find Silicon -iname "ArmGicLib.inf" 2>/dev/null || true
+
           echo ""
-          echo "=== ls libs/ ==="
-          ls -la Platforms/OnePlus/SimpleInit/libs/
+          echo "=== SimpleInitMain.inf ==="
+          cat -n Platforms/OnePlus/SimpleInit/src/main/SimpleInitMain.inf
+
           echo ""
-          echo "=== .gitmodules ==="
-          cat Platforms/OnePlus/SimpleInit/.gitmodules
+          echo "=== SimpleInit.inc LibraryClasses 段 ==="
+          awk '/^\[LibraryClasses\]/{f=1} f{print} /^\[/{if(f && $0 !~ /LibraryClasses/){exit}}' \
+            Platforms/OnePlus/SimpleInit/SimpleInit.inc
+
           echo ""
-          echo "=== SimpleInit.dec raw content ==="
-          cat -n Platforms/OnePlus/SimpleInit/SimpleInit.dec
+          echo "=== SimpleInitBootLinux.inf ==="
+          cat -n Platforms/OnePlus/SimpleInit/src/linux-boot/SimpleInitBootLinux.inf
+
+          echo ""
+          echo "=== SimpleInitGUI.inf 里的 ArmGicLib 引用 ==="
+          grep -n "ArmGicLib\|LibraryClasses" \
+            Platforms/OnePlus/SimpleInit/src/gui/SimpleInitGUI.inf || true
