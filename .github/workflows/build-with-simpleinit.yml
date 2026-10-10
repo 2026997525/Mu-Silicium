@@ -28,66 +28,10 @@ jobs:
             https://github.com/BigfootACA/simple-init.git \
             External/simple-init
 
-      - name: Verify simple-init layout
-        run: |
-          echo "=== simple-init root ==="
-          ls -la External/simple-init/
-          echo "=== Looking for SimpleInit.dec ==="
-          find External/simple-init -maxdepth 2 -name "SimpleInit.dec"
-          echo "=== Looking for SimpleInit.inc ==="
-          find External/simple-init -maxdepth 2 -name "SimpleInit.inc"
-
-      - name: Patch build_uefi.py to add simple-init to PACKAGES_PATH
-        run: |
-          cp build_uefi.py build_uefi.py.bak
-
-          python3 << 'PYEOF'
-          import os
-          pwd = os.environ['PWD']
-          extra = pwd + '/External/simple-init'
-
-          with open('build_uefi.py', 'r') as f:
-              content = f.read()
-
-          if 'External/simple-init' in content:
-              print('Already patched, skipping.')
-          else:
-              import re
-              # 覆盖所有可能的写法
-              patterns = [
-                  (r"(PACKAGES_PATH\s*=\s*)", r"\1'" + extra + ":' + "),
-                  (r"(['\"]PACKAGES_PATH['\"]\s*:\s*)", r"\1'" + extra + ":' + "),
-              ]
-              patched = False
-              for pat, repl in patterns:
-                  new_content, n = re.subn(pat, repl, content, count=1)
-                  if n:
-                      content = new_content
-                      patched = True
-                      break
-
-              if not patched:
-                  print('WARN: no PACKAGES_PATH assignment found in build_uefi.py')
-                  print('Dumping first 80 lines for debugging:')
-                  print('\n'.join(content.splitlines()[:80]))
-                  raise SystemExit(1)
-
-              with open('build_uefi.py', 'w') as f:
-                  f.write(content)
-              print('Patched build_uefi.py')
-
-          print('=== PACKAGES_PATH references ===')
-          PYEOF
-
-          grep -n "PACKAGES_PATH" build_uefi.py
-
-      - name: Patch aston.dsc with SimpleInit components
+      - name: Patch aston.dsc
         run: |
           DSC="Platforms/OnePlus/astonPkg/aston.dsc"
-          INC="External/simple-init/SimpleInit.inc"
-
           [ -f "$DSC" ] || { echo "ERROR: $DSC not found"; exit 1; }
-          [ -f "$INC" ] || { echo "ERROR: $INC not found"; exit 1; }
 
           if grep -q "SimpleInit" "$DSC"; then
             echo "DSC already patched."
@@ -95,14 +39,14 @@ jobs:
           fi
 
           python3 << 'PYEOF'
-          dsc_path = "Platforms/OnePlus/astonPkg/aston.dsc"
-          inc_path = "External/simple-init/SimpleInit.inc"
+          dsc = "Platforms/OnePlus/astonPkg/aston.dsc"
+          inc = "External/simple-init/SimpleInit.inc"
 
-          def extract_section(path, section):
+          def section(path, name):
               out, inside = [], False
               for line in open(path):
                   s = line.strip()
-                  if s == '[' + section + ']':
+                  if s == '[' + name + ']':
                       inside = True
                       continue
                   if inside and s.startswith('[') and s.endswith(']'):
@@ -111,10 +55,23 @@ jobs:
                       out.append(line.rstrip('\n'))
               return out
 
-          libs = [l for l in extract_section(inc_path, 'LibraryClasses') if l.strip()]
-          comps = [l for l in extract_section(inc_path, 'Components') if l.strip()]
+          libs = [l for l in section(inc, 'LibraryClasses') if l.strip()]
+          comps = [l for l in section(inc, 'Components') if l.strip()]
 
-          with open(dsc_path, 'a') as f:
+          # 路径前面加上 External/simple-init/
+          def prefix(l):
+              l = l.strip()
+              if not l or l.startswith('#'):
+                  return l
+              # 已经带前缀的不重复加
+              if l.startswith('External/simple-init/'):
+                  return l
+              return 'External/simple-init/' + l
+
+          libs = [prefix(l) for l in libs]
+          comps = [prefix(l) for l in comps]
+
+          with open(dsc, 'a') as f:
               f.write('\n# ===== SimpleInit injected begin =====\n')
               f.write('[LibraryClasses]\n')
               for l in libs:
@@ -130,7 +87,7 @@ jobs:
           echo "=== tail of DSC ==="
           tail -40 "$DSC"
 
-      - name: Build UEFI for aston
+      - name: Build UEFI
         run: |
           bash ./setup_env.sh -p apt
           python3 build_uefi.py -d aston
